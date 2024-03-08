@@ -190,6 +190,4 @@ Temporary Items
 
 
 # Custom ignore
-chroma_db/
-knowledge_data/
-document_store.txt
+data_store

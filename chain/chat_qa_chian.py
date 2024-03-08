@@ -1,80 +1,72 @@
 from operator import itemgetter
 
-from langchain.chains import LLMChain
-from langchain.retrievers import BM25Retriever, EnsembleRetriever, ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import DocumentCompressorPipeline, EmbeddingsFilter
-from langchain.retrievers.multi_query import MultiQueryRetriever, LineListOutputParser
-from langchain_community.document_transformers import EmbeddingsRedundantFilter
+from langchain.retrievers import BM25Retriever, EnsembleRetriever
 from langchain_community.vectorstores.chroma import Chroma
-from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, HumanMessage, get_buffer_string
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.prompts import format_document, PromptTemplate
 from langchain_core.runnables import RunnableParallel
 
-from embedding.custom_embedding import CustomEmbeddings
+from embedding.dashscope_embedding import dashscope_embeddings
 from llm.get_llm import get_llm
 
 
-class RGA_Chain():
+class RGAChain:
+    """
+    RGAChain用于创建一个带有对话历史纪录的检索增强生存（RGA）问答链
+    """
 
-    def __init__(self, model_name: str = 'qwen-max', temperature: float = 0.1, chat_history: list = [],
-                 docs: list = []):
+    def __init__(self, docs: list, model_name: str = 'qwen-max', temperature: float = 0.1):
+        """
+
+        :param docs: 用于 bm25 检索的文字材料list
+        :param model_name: llm 模型选择
+        :param temperature: llm 模型 temperature 参数
+        """
         self.model_name = model_name
         self.temperature = temperature
         self.chat_history = []
-        self.docs = []
+        self.docs = docs
 
     def clear_history(self):
         # 清空历史记录
         return self.chat_history.clear()
 
-    def get_history_str(self):
-        return get_buffer_string(self.chat_history)
-
-    def set_history_ai(self, response):
-        # 将ai相应写入history
-        self.chat_history.append(AIMessage(content=response))
-
-    def set_history_human(self, prompt):
-        # 将ai相应写入history
-        self.chat_history.append(HumanMessage(content=prompt))
-
-    def get_docs_from_txt(self, txt_path):
-        # 读取txt并创建doc数据
-        try:
-            with open(txt_path, 'r') as f:
-                lines = f.readlines()
-                for line in lines:
-                    self.docs.append(Document(line))
-        except FileNotFoundError:
-            print("Error: No file found or failed to read the file")
-        else:
-            print("loaded successfully")
+    def get_history(self):
+        # 获取历史纪录
+        return self.chat_history
 
     def answer(self, question: str):
+        """
+        answer方法用于调用 RGA 问答链，并返回问答结果
+        :param question: 问题字符串
+        :return: 问答结果
+        """
 
-        # 构建数据检索
-        embedding = CustomEmbeddings()
+        # 创建 embedding
+        embeddings = dashscope_embeddings()
 
-        persist_directory = '../chroma_db'
+        # 构建向量检索器
+        persist_directory = '../data_store/chroma_db'
         vectordb = Chroma(
             persist_directory=persist_directory,
-            embedding_function=embedding
+            embedding_function=embeddings
         )
-
-        # 构建基于BM25的关键字检索器
-        bm25_retriever = BM25Retriever.from_documents(self.docs)
-
-        # 构建基于向量的检索器
         vector_retriever = vectordb.as_retriever()
 
-        # 构建混合检索器
-        retriever = EnsembleRetriever(
-            retrievers=[bm25_retriever, vector_retriever],
-            weights=[0.5, 0.5]
-        )
+        if self.docs == [] or len(self.docs) < 1:
+            # 若传入的关键字检索内容不为空，则加入 bm25关键字检索，否则仅使用向量检索器
+            retriever = vector_retriever
+            print("向量检索")
+        else:
+            # 构建基于BM25的关键字检索器
+            bm25_retriever = BM25Retriever.from_documents(self.docs)
+            # 构建混合检索器
+            retriever = EnsembleRetriever(
+                retrievers=[bm25_retriever, vector_retriever],
+                weights=[0.5, 0.5],
+            )
+            print("混合检索")
 
         # 构建模板
 
@@ -134,11 +126,9 @@ class RGA_Chain():
 
         llm_input = {
             "question": question,
-            "chat_history": self.get_history_str()
+            "chat_history": str(self.chat_history)
         }
         answer = conversational_qa_chain.invoke(llm_input)
 
-        self.set_history_human(question)
-        self.set_history_ai(answer)
-
+        self.chat_history.append({"human": question, "ai": answer})
         return answer
